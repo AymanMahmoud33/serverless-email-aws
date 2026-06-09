@@ -15,6 +15,8 @@ Catch all mail at your domain, store it durably, forward it — fully automated 
 - **Provisions** all DNS records (MX, SPF, DMARC, DKIM CNAMEs) automatically in Route 53
 - **Activates** the SES receipt rule set automatically — no manual steps after deploy
 
+<img width="800" height="533" alt="image" src="https://github.com/user-attachments/assets/57ac3f5e-d64d-4fee-8012-56d63d614e33" />
+
 ```
 someone@gmail.com
     │
