@@ -17,19 +17,6 @@ Catch all mail at your domain, store it durably, forward it — fully automated 
 
 <img width="800" height="533" alt="image" src="https://github.com/user-attachments/assets/57ac3f5e-d64d-4fee-8012-56d63d614e33" />
 
-```
-someone@gmail.com
-    │
-    ▼
-SES receipt rule          ← catches everything @yourdomain.com
-    │
-    ├──► S3 (inbox/)      ← raw .eml stored durably first
-    │
-    └──► Lambda           ← strips bad headers, rewrites, forwards
-              │
-              ▼
-        you@gmail.com     ← Reply-To points back to original sender
-```
 
 ---
 
