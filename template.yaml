@@ -1,0 +1,223 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless email infrastructure (SES + S3 + Lambda)
+
+Parameters:
+  EmailDomain:
+    Type: String
+    Description: Domain configured to receive email (e.g. yourcompany.com)
+  ForwardTo:
+    Type: String
+    Description: Address to forward incoming mail to
+  ForwardFrom:
+    Type: String
+    Description: Verified sender used as the From on forwards
+  HostedZoneId:
+    Type: String
+    Description: Route 53 Hosted Zone ID for the domain
+
+Resources:
+
+  # -------------------------------------------------------
+  # S3 — raw email storage
+  # -------------------------------------------------------
+  EmailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireRawEmails
+            Status: Enabled
+            ExpirationInDays: 30
+
+  EmailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EmailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSESPuts
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${EmailBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  # -------------------------------------------------------
+  # Lambda — parse and forward
+  # -------------------------------------------------------
+  ProcessEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: app.lambda_handler
+      CodeUri: ./src/
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          FORWARD_TO: !Ref ForwardTo
+          FORWARD_FROM: !Ref ForwardFrom
+          BUCKET_NAME: !Ref EmailBucket
+          BUCKET_PREFIX: inbox/
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref EmailBucket
+        - Statement:
+            - Effect: Allow
+              Action: ses:SendRawEmail
+              Resource: '*'
+
+  ProcessEmailFunctionSESPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ProcessEmailFunction.Arn
+      Principal: ses.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # -------------------------------------------------------
+  # SES — identity, receipt rule set and rule
+  # -------------------------------------------------------
+  SESEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref EmailDomain
+      DkimAttributes:
+        SigningEnabled: true
+
+  ReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: !Sub '${AWS::StackName}-rules'
+
+  ReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn:
+      - EmailBucketPolicy
+      - SESEmailIdentity
+    Properties:
+      RuleSetName: !Ref ReceiptRuleSet
+      Rule:
+        Name: store-and-process
+        Enabled: true
+        ScanEnabled: true
+        Recipients:
+          - !Ref EmailDomain
+        Actions:
+          - S3Action:
+              BucketName: !Ref EmailBucket
+              ObjectKeyPrefix: inbox/
+          - LambdaAction:
+              FunctionArn: !GetAtt ProcessEmailFunction.Arn
+              InvocationType: Event
+
+  # -------------------------------------------------------
+  # Route 53 — all DNS records created automatically
+  # -------------------------------------------------------
+  DkimRecord1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${SESEmailIdentity.DkimDNSTokenName1}"
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !Sub "${SESEmailIdentity.DkimDNSTokenValue1}"
+
+  DkimRecord2:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${SESEmailIdentity.DkimDNSTokenName2}"
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !Sub "${SESEmailIdentity.DkimDNSTokenValue2}"
+
+  DkimRecord3:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${SESEmailIdentity.DkimDNSTokenName3}"
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !Sub "${SESEmailIdentity.DkimDNSTokenValue3}"
+
+  MXRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${EmailDomain}."
+      Type: MX
+      TTL: 300
+      ResourceRecords:
+        - !Sub "10 inbound-smtp.${AWS::Region}.amazonaws.com"
+
+  SPFRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${EmailDomain}."
+      Type: TXT
+      TTL: 300
+      ResourceRecords:
+        - '"v=spf1 include:amazonses.com -all"'
+
+  DMARCRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "_dmarc.${EmailDomain}."
+      Type: TXT
+      TTL: 300
+      ResourceRecords:
+        - !Sub '"v=DMARC1; p=none; rua=mailto:dmarc@${EmailDomain}"'
+
+  # -------------------------------------------------------
+  # Custom resource — activates the rule set automatically
+  # -------------------------------------------------------
+  ActivateRuleSetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      InlineCode: |
+        import boto3, cfnresponse
+        def handler(event, context):
+          try:
+            if event['RequestType'] in ('Create', 'Update'):
+              boto3.client('ses').set_active_receipt_rule_set(
+                RuleSetName=event['ResourceProperties']['RuleSetName']
+              )
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+          except Exception as e:
+            cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ses:SetActiveReceiptRuleSet
+              Resource: '*'
+
+  ActivateRuleSet:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: ReceiptRuleSet
+    Properties:
+      ServiceToken: !GetAtt ActivateRuleSetFunction.Arn
+      RuleSetName: !Ref ReceiptRuleSet
+
+Outputs:
+  BucketName:
+    Description: S3 bucket storing raw incoming emails
+    Value: !Ref EmailBucket
+  RuleSetName:
+    Description: Active receipt rule set
+    Value: !Ref ReceiptRuleSet
+  LambdaFunction:
+    Description: Email processing function
+    Value: !GetAtt ProcessEmailFunction.Arn

@@ -1,0 +1,21 @@
+version = 0.1
+
+[default.global.parameters]
+region = "us-east-1"
+
+[default.deploy.parameters]
+stack_name      = "serverless-email"
+capabilities    = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3      = true
+
+# Copy this file to samconfig.toml and fill in your values.
+# samconfig.toml is git-ignored to avoid committing account-specific details.
+
+# [default.deploy.parameters]
+# parameter_overrides = [
+#   "EmailDomain=yourdomain.com",
+#   "ForwardTo=you@gmail.com",
+#   "ForwardFrom=relay@yourdomain.com",
+#   "HostedZoneId=ZXXXXXXXXXXXXX"
+# ]

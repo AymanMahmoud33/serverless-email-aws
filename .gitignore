@@ -1,0 +1,23 @@
+# SAM build output
+.aws-sam/
+
+# SAM config with personal values (use samconfig.toml.example instead)
+samconfig.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# AWS credentials
+.env
+*.env
+credentials
+
+# OS
+.DS_Store
+Thumbs.db
